@@ -99,7 +99,7 @@ button:disabled{opacity:.5;cursor:default}
         <p class="eyebrow" id="ovEye">Época de caça aberta</p>
         <h2 id="ovTitle">Tiro ao Pato</h2>
         <p id="ovText">Os patos saem do caniçal aos pares e tens 3 tiros para cada par. Abate pelo menos 6 dos 10 patos da ronda para passar à seguinte.</p>
-        <p class="how" id="how"><b>Com as mãos:</b> faz uma pistola com a mão, com o indicador esticado a apontar para o ecrã e o polegar para cima. A mira segue o dedo. <b>Para disparar, baixa o polegar</b> e volta a levantá-lo para recarregar.</p>
+        <p class="how" id="how"><b>Com as mãos:</b> faz uma pistola com a mão, com o indicador esticado a apontar para o ecrã e o polegar para cima. A mira segue o dedo. <b>Para disparar, baixa o polegar</b> e volta a levantá-lo para recarregar. Também podes tocar no ecrã com a outra mão.</p>
         <ul class="legend" id="legend">
           <li class="sw" style="background:#2e7d4f"></li><li>Pato-real</li><li class="pts">500</li>
           <li class="sw" style="background:#2b4f8a"></li><li>Marrequinho azul, mais rápido</li><li class="pts">1000</li>
@@ -150,8 +150,9 @@ let taps = [];
 /* ================= hand tracking (MediaPipe) ================= */
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-const FIRE_T = .42, ARM_T = .62;   // thumb distance / palm size: below FIRE_T fires, above ARM_T re-cocks
-const HAND = { on:false, loading:false, seen:false, sx:null, sy:null, ratio:1, armed:false, last:0, fired:0, hist:[], lm:null, missing:0 };
+// trigger is relative to how far this person's thumb sits when cocked (ref): below FIRE_K*ref fires, above ARM_K*ref re-cocks
+const FIRE_K = .62, ARM_K = .8;
+const HAND = { on:false, loading:false, seen:false, sx:null, sy:null, ratio:1, ref:.6, lt:0, armed:false, last:0, fired:0, hist:[], lm:null, missing:0 };
 const video = $('video'), pip = $('pip'), pctx = pip.getContext('2d');
 let landmarker = null, lastVT = -1;
 
@@ -170,9 +171,10 @@ async function startCamera() {
       minHandDetectionConfidence:.5, minHandPresenceConfidence:.5, minTrackingConfidence:.5 });
     try { landmarker = await HandLandmarker.createFromOptions(fileset, opts('GPU')); }
     catch (e) { landmarker = await HandLandmarker.createFromOptions(fileset, opts('CPU')); }
-    HAND.on = true; pip.hidden = false;
+    HAND.on = true;
     $('camBtn').textContent = 'Câmara ligada';
-    setStatus('Câmara pronta. Faz a pistola com a mão e baixa o polegar para começar.');
+    setStatus('');
+    startGame();
     return true;
   } catch (e) {
     console.error(e);
@@ -194,7 +196,8 @@ function handFrame(now) {
   if (!lm) { HAND.seen = false; HAND.missing++; return; }
   HAND.seen = true; HAND.missing = 0;
   const dd = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const palm = dd(lm[0], lm[5]) || .1;
+  const palm = Math.max(dd(lm[0], lm[5]), dd(lm[5], lm[17]) * 1.15, dd(lm[0], lm[9]) * .9) || .1;
+  const fdt = HAND.lt ? Math.min(.2, (now - HAND.lt) / 1000) : 0; HAND.lt = now;
 
   // aim = index fingertip, mirrored, with the central part of the camera mapped to the whole screen
   const tx = 1 - (lm[8].x * .75 + lm[7].x * .25), ty = lm[8].y * .75 + lm[7].y * .25;
@@ -206,10 +209,11 @@ function handFrame(now) {
   while (HAND.hist.length && now - HAND.hist[0].t > 500) HAND.hist.shift();
 
   // trigger = thumb tip dropping onto the side of the index finger
-  const r = Math.min(dd(lm[4], lm[6]), dd(lm[4], lm[5])) / palm;
+  const r = Math.min(dd(lm[4], lm[6]), dd(lm[4], lm[5]), dd(lm[4], lm[10])) / palm;
   HAND.ratio = HAND.ratio * .4 + r * .6;
-  if (HAND.armed && HAND.ratio < FIRE_T && now - HAND.last > 220) { HAND.armed = false; HAND.last = now; handFire(now); }
-  else if (!HAND.armed && HAND.ratio > ARM_T) HAND.armed = true;
+  HAND.ref = Math.max(HAND.ratio, .35, HAND.ref - fdt * .08);
+  if (HAND.armed && HAND.ratio < HAND.ref * FIRE_K && now - HAND.last > 220) { HAND.armed = false; HAND.last = now; handFire(now); }
+  else if (!HAND.armed && HAND.ratio > HAND.ref * ARM_K) HAND.armed = true;
 }
 function handFire(now) {
   HAND.fired = 1;
@@ -220,7 +224,10 @@ function handFire(now) {
 }
 const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 function drawPip() {
-  if (!HAND.on) return;
+  // the camera preview only shows on menus, or during play when the hand is lost
+  const show = HAND.on && (G.mode !== 'play' || HAND.missing > 30);
+  if (pip.hidden === show) pip.hidden = !show;
+  if (!show) return;
   const w = pip.width, h = pip.height, vh = h - 56;
   pctx.fillStyle = '#0d1715'; pctx.fillRect(0, 0, w, h);
   pctx.save(); pctx.translate(w, 0); pctx.scale(-1, 1);
@@ -233,11 +240,11 @@ function drawPip() {
   }
   pctx.restore();
   // trigger meter
-  const y = vh + 14, bw = w - 24, v = clamp(HAND.ratio / 1.1, 0, 1);
+  const y = vh + 14, bw = w - 24, v = clamp(HAND.ratio / HAND.ref / 1.2, 0, 1);
   pctx.fillStyle = '#243a33'; pctx.fillRect(12, y, bw, 12);
   pctx.fillStyle = HAND.armed ? '#d9a441' : '#e04a2f'; pctx.fillRect(12, y, bw * v, 12);
   pctx.fillStyle = '#f2e4c4';
-  pctx.fillRect(12 + bw * FIRE_T / 1.1 - 1, y - 3, 2, 18); pctx.fillRect(12 + bw * ARM_T / 1.1 - 1, y - 3, 2, 18);
+  pctx.fillRect(12 + bw * FIRE_K / 1.2 - 1, y - 3, 2, 18); pctx.fillRect(12 + bw * ARM_K / 1.2 - 1, y - 3, 2, 18);
   pctx.font = '600 22px "Barlow Condensed", sans-serif'; pctx.textBaseline = 'top';
   pctx.fillText(!HAND.seen ? 'Mão não detetada' : HAND.armed ? 'Pronto: baixa o polegar' : 'Levanta o polegar', 12, y + 16);
 }
@@ -453,9 +460,10 @@ function startGame() {
 }
 function startRound() {
   G.tally = Array(10).fill(null); G.wave = 0; G.shots = 3; G.phase = 'intro';
-  banner(`Ronda ${G.round}`, `Abate ${need()} de 10 patos`, 1.7);
+  const intro = HAND.on && G.round === 1 ? 3 : 1.7;
+  banner(`Ronda ${G.round}`, intro > 2 ? 'Aponta com o indicador e baixa o polegar para disparar' : `Abate ${need()} de 10 patos`, intro);
   sfxJingle(); renderHud();
-  after(1.7, startWave);
+  after(intro, startWave);
 }
 function startWave() {
   if (G.wave >= 5) return endRound();
@@ -654,6 +662,8 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   const [x, y] = pos(e);
   mouse.touch = e.pointerType !== 'mouse';
+  // in hand mode a tap anywhere fires where the hand is aiming
+  if (HAND.on && HAND.seen && G.mode === 'play') { handFire(performance.now()); return; }
   shoot(x, y, mouse.touch ? 'touch' : 'mouse');
 });
 cv.addEventListener('pointermove', e => { const [x, y] = pos(e); mouse.x = x; mouse.y = y; mouse.on = true; mouse.touch = e.pointerType !== 'mouse'; });
