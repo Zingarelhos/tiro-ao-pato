@@ -252,7 +252,7 @@ function drawPip() {
 /* ================= audio ================= */
 let ac = null;
 function A(gesture) {
-  if (muted) return null;
+  if (muted || document.hidden) return null;
   try {
     if (!ac && gesture) ac = new (window.AudioContext || window.webkitAudioContext)();
     if (ac && ac.state === 'suspended') ac.resume();
@@ -677,6 +677,12 @@ document.addEventListener('keydown', e => {
 });
 const setMute = () => { $('mute').textContent = muted ? 'Som: desligado' : 'Som: ligado'; $('mute').setAttribute('aria-pressed', String(muted)); };
 $('mute').addEventListener('click', () => { muted = !muted; try { localStorage.setItem('tiroaopato.mute', muted ? '1' : '0'); } catch (e) {} setMute(); if (!muted) A(true); });
+
+// go silent whenever the tab or app is in the background
+document.addEventListener('visibilitychange', () => {
+  if (!ac) return;
+  if (document.hidden) ac.suspend(); else if (!muted) ac.resume();
+});
 
 /* ================= boot ================= */
 new ResizeObserver(resize).observe(stage);
